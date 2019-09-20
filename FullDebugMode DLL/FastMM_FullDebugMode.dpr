@@ -51,7 +51,8 @@ Change log:
   - Added a workaround for QC 107209 (Thanks to David Heffernan.)
   Version 1.63 (14 September 2013):
   - Added support for OSX (Thanks to Sebastian Zierer)
-
+ Version 1.64 {20 September 2019}
+  - Added support for LdrDllNotifications to avoid IsValidCallSite A/Vs under Windows.
 }
 
 {$IFDEF MSWINDOWS}
@@ -180,11 +181,25 @@ var
 {$IFDEF MSWINDOWS}
 {Updates the memory page access map. Currently only supports the low 4GB of
  address space.}
-procedure UpdateMemoryPageAccessMap(AAddress: NativeUInt);
+
+procedure UpdateMemoryPageAccessMap(AAddress: Pointer; ASizeOfRegion: ULONG; AAccess: TMemoryPageAccess); overload;
+var
+  LStartPage, LPageCount: NativeUInt;
+begin
+  LStartPage := NativeUInt(AAddress) div 4096;
+  LPageCount := ASizeOfRegion div 4096;
+  if LStartPage < NativeUInt(Length(MemoryPageAccessMap)) then
+  begin
+    if (LStartPage + LPageCount) >= NativeUInt(Length(MemoryPageAccessMap)) then
+      LPageCount := NativeUInt(Length(MemoryPageAccessMap)) - LStartPage;
+    FillChar(MemoryPageAccessMap[LStartPage], LPageCount, Ord(AAccess));
+  end;
+end;
+
+procedure UpdateMemoryPageAccessMap(AAddress: NativeUInt); overload;
 var
   LMemInfo: TMemoryBasicInformation;
   LAccess: TMemoryPageAccess;
-  LStartPage, LPageCount: NativeUInt;
 begin
   {Query the page}
   if VirtualQuery(Pointer(AAddress), LMemInfo, SizeOf(LMemInfo)) <> 0 then
@@ -199,15 +214,7 @@ begin
     end
     else
       LAccess := mpaNotExecutable;
-    {Update the map}
-    LStartPage := NativeUInt(LMemInfo.BaseAddress) div 4096;
-    LPageCount := LMemInfo.RegionSize div 4096;
-    if LStartPage < NativeUInt(Length(MemoryPageAccessMap)) then
-    begin
-      if (LStartPage + LPageCount) >= NativeUInt(Length(MemoryPageAccessMap)) then
-        LPageCount := NativeUInt(Length(MemoryPageAccessMap)) - LStartPage;
-      FillChar(MemoryPageAccessMap[LStartPage], LPageCount, Ord(LAccess));
-    end;
+    UpdateMemoryPageAccessMap(LMemInfo.BaseAddress, LMemInfo.RegionSize, LAccess);
   end
   else
   begin
@@ -734,6 +741,59 @@ begin
 end;
 {$ENDIF}
 
+{$IFDEF MSWINDOWS}
+{ LDR DLL Notifications }
+
+const
+  LDR_DLL_NOTIFICATION_REASON_LOADED = 1;
+  LDR_DLL_NOTIFICATION_REASON_UNLOADED = 2;
+
+type
+  PUNICODE_STRING = ^UNICODE_STRING;
+  UNICODE_STRING = packed record
+    Length: Word;
+    MaximumLength: Word;
+    Buffer: PWideChar;
+  end;
+
+  PLDR_DLL_NOTIFICATION_DATA = ^_LDR_DLL_NOTIFICATION_DATA;
+  _LDR_DLL_NOTIFICATION_DATA = packed record
+    Flags:        ULONG;
+    FullDllName:  PUNICODE_STRING;
+    BaseDllName:  PUNICODE_STRING;
+    DllBase:      Pointer;
+    SizeOfImage:  ULONG;
+  end;
+
+TLdrDllNotification = procedure (Reason: ULONG; Data: PLDR_DLL_NOTIFICATION_DATA; Context: Pointer); stdcall;
+
+procedure LdrRegisterDllNotification(Flags: ULONG; Notification: TLdrDllNotification;
+  Context: Pointer; var Cookie: Pointer); stdcall; external 'ntdll.dll' name 'LdrRegisterDllNotification';
+procedure LdrUnregisterDllNotification(Cookie: Pointer); stdcall; external 'ntdll.dll' name 'LdrUnregisterDllNotification';
+
+procedure DllWatcher(Reason: ULONG; Data: PLDR_DLL_NOTIFICATION_DATA; Context: Pointer); stdcall;
+begin
+  case Reason of
+    LDR_DLL_NOTIFICATION_REASON_LOADED:
+      ;
+    LDR_DLL_NOTIFICATION_REASON_UNLOADED:
+      UpdateMemoryPageAccessMap(Data.DllBase, Data.SizeOfImage, mpaNotExecutable);
+  end;
+end;
+
+var
+  Cookie: Pointer;
+
+procedure DllMain(Reason: Integer);
+begin
+  case Reason of
+    DLL_PROCESS_ATTACH:
+      LdrRegisterDllNotification(0, DllWatcher, nil, Cookie);
+    DLL_PROCESS_DETACH:
+      LdrUnregisterDllNotification(Cookie);
+  end;
+end;
+{$ENDIF}
 {-----------------------------Exported Functions----------------------------}
 
 exports
@@ -742,7 +802,12 @@ exports
   LogStackTrace;
 
 begin
+{$IFDEF MSWINDOWS}
+  DllProc := DllMain;
+  DllMain(DLL_PROCESS_ATTACH);
+{$ENDIF}
 {$ifdef JCLDebug}
   JclStackTrackingOptions := JclStackTrackingOptions + [stAllModules];
 {$endif}
 end.
+
