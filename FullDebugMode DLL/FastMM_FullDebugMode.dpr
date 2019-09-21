@@ -51,7 +51,7 @@ Change log:
   - Added a workaround for QC 107209 (Thanks to David Heffernan.)
   Version 1.63 (14 September 2013):
   - Added support for OSX (Thanks to Sebastian Zierer)
- Version 1.64 {20 September 2019}
+ Version 1.64 (20 September 2019)
   - Added support for LdrDllNotifications to avoid IsValidCallSite A/Vs under Windows.
 }
 
