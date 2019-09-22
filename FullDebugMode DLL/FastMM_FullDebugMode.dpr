@@ -745,6 +745,7 @@ end;
 { LDR DLL Notifications }
 
 const
+  ntdll = 'ntdll.dll';
   LDR_DLL_NOTIFICATION_REASON_LOADED = 1;
   LDR_DLL_NOTIFICATION_REASON_UNLOADED = 2;
 
@@ -765,11 +766,17 @@ type
     SizeOfImage:  ULONG;
   end;
 
-TLdrDllNotification = procedure (Reason: ULONG; Data: PLDR_DLL_NOTIFICATION_DATA; Context: Pointer); stdcall;
+  TLdrDllNotification = procedure (Reason: ULONG; Data: PLDR_DLL_NOTIFICATION_DATA;
+    Context: Pointer); stdcall;
+  TLdrRegisterDllNotification = procedure (Flags: ULONG;
+    Notification: TLdrDllNotification; Context: Pointer; var Cookie: Pointer); stdcall;
+  TLdrUnregisterDllNotification = procedure(Cookie: Pointer); stdcall;
 
-procedure LdrRegisterDllNotification(Flags: ULONG; Notification: TLdrDllNotification;
-  Context: Pointer; var Cookie: Pointer); stdcall; external 'ntdll.dll' name 'LdrRegisterDllNotification';
-procedure LdrUnregisterDllNotification(Cookie: Pointer); stdcall; external 'ntdll.dll' name 'LdrUnregisterDllNotification';
+var
+  NTDLLModule: HMODULE;
+  LdrRegisterDllNotification: TLdrRegisterDllNotification;
+  LdrUnregisterDllNotification: TLdrUnregisterDllNotification;
+  Cookie: Pointer;
 
 procedure DllWatcher(Reason: ULONG; Data: PLDR_DLL_NOTIFICATION_DATA; Context: Pointer); stdcall;
 begin
@@ -780,9 +787,6 @@ begin
       UpdateMemoryPageAccessMap(Data.DllBase, Data.SizeOfImage, mpaNotExecutable);
   end;
 end;
-
-var
-  Cookie: Pointer;
 
 procedure DllMain(Reason: Integer);
 begin
@@ -803,8 +807,17 @@ exports
 
 begin
 {$IFDEF MSWINDOWS}
-  DllProc := DllMain;
-  DllMain(DLL_PROCESS_ATTACH);
+  NTDllModule := SafeLoadLibrary(ntdll);
+  if NTDLLModule <> 0 then
+    begin
+      @LdrRegisterDllNotification := GetProcAddress(NTDLLModule, 'LdrRegisterDllNotification');
+      @LdrUnregisterDllNotification := GetProcAddress(NTDLLModule, 'LdrUnregisterDllNotification');
+      if Assigned(LdrRegisterDllNotification) and Assigned(LdrUnregisterDllNotification) then
+        begin
+          DllProc := DllMain;
+          DllMain(DLL_PROCESS_ATTACH);
+        end;
+    end;
 {$ENDIF}
 {$ifdef JCLDebug}
   JclStackTrackingOptions := JclStackTrackingOptions + [stAllModules];
